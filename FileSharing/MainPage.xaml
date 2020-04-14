@@ -1,0 +1,46 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<TabbedPage xmlns="http://xamarin.com/schemas/2014/forms"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:d="http://xamarin.com/schemas/2014/forms/design"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             x:Class="FileSharing.MainPage">
+
+    <ContentPage Title="Send Files" Padding="20">
+        <ContentPage.IconImageSource>
+            <FontImageSource
+            FontFamily="{DynamicResource MaterialFontFamily}"
+            Glyph="&#xf0259;"
+            Size="44" />
+        </ContentPage.IconImageSource>
+        <StackLayout>
+            <Label Text="IP Address" />
+            <Entry x:Name="IPAddressInput" />
+
+            <Button Text="Pick a file..." Clicked="HandlePickFile" />
+
+            <ProgressBar x:Name="SendProgress" />
+            <Button Text="Send file" Clicked="HandleSendFile" />
+            <ScrollView Orientation="Vertical" VerticalOptions="FillAndExpand">
+                <Label x:Name="SendLog" />
+            </ScrollView>
+        </StackLayout>
+    </ContentPage>
+    <ContentPage Title="Receive Files" Padding="20">
+        <ContentPage.IconImageSource>
+            <FontImageSource
+            FontFamily="{DynamicResource MaterialFontFamily}"
+            Glyph="&#xf024d;"
+            Size="44" />
+        </ContentPage.IconImageSource>
+        <StackLayout>
+            <Label x:Name="IPAddressCurrent" />
+            <ProgressBar x:Name="ReceiveProgress" />
+            <CheckBox CheckedChanged="HandleReceiveFile" />
+            <Label Text="Receive file" />
+            <ScrollView Orientation="Vertical" VerticalOptions="FillAndExpand">
+                <Label x:Name="ReceiveLog" />
+            </ScrollView>
+        </StackLayout>
+    </ContentPage>
+</TabbedPage>
