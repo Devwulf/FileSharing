@@ -1,0 +1,15 @@
+{
+  "profiles": {
+    "FileSharing.Simulator": {
+      "commandName": "Project"
+    },
+    "FileSharing.Simulator(send)": {
+      "commandName": "Project",
+      "commandLineArgs": "send"
+    },
+    "FileSharing.Simulator(listen)": {
+      "commandName": "Project",
+      "commandLineArgs": "listen"
+    }
+  }
+}

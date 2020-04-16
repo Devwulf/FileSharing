@@ -14,13 +14,16 @@
             Size="44" />
         </ContentPage.IconImageSource>
         <StackLayout>
+            <Label Text="v0.57" />
+            <Button Text="Refresh Devices" Clicked="HandleRefreshDevices" />
+            
             <Label Text="IP Address" />
             <Entry x:Name="IPAddressInput" />
 
             <Button Text="Pick a file..." Clicked="HandlePickFile" />
 
+            <Button x:Name="SendButton" Text="Send File" Clicked="HandleSendFile" />
             <ProgressBar x:Name="SendProgress" />
-            <Button Text="Send file" Clicked="HandleSendFile" />
             <ScrollView Orientation="Vertical" VerticalOptions="FillAndExpand">
                 <Label x:Name="SendLog" />
             </ScrollView>
@@ -35,9 +38,19 @@
         </ContentPage.IconImageSource>
         <StackLayout>
             <Label x:Name="IPAddressCurrent" />
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="70*" />
+                    <ColumnDefinition Width="30*" />
+                </Grid.ColumnDefinitions>
+                <Label Text="Discoverable" />
+                <Switch x:Name="Discoverable" IsToggled="false" Toggled="HandleDiscoverableToggle" />
+            </Grid>
+            <Button x:Name="ReceiveButton" Text="Receive File" Clicked="HandleReceiveFile" />
             <ProgressBar x:Name="ReceiveProgress" />
-            <CheckBox CheckedChanged="HandleReceiveFile" />
-            <Label Text="Receive file" />
             <ScrollView Orientation="Vertical" VerticalOptions="FillAndExpand">
                 <Label x:Name="ReceiveLog" />
             </ScrollView>
