@@ -1,8 +1,10 @@
-﻿using Plugin.FilePicker;
+﻿using Newtonsoft.Json;
+using Plugin.FilePicker;
 using Plugin.FilePicker.Abstractions;
 using Sockets.Plugin;
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
@@ -22,6 +24,26 @@ namespace FileSharing
     [DesignTimeVisible(false)]
     public partial class MainPage : TabbedPage
     {
+        public class DeviceDetails
+        {
+            public string Name { get; set; }
+            public IPAddress Address { get; set; }
+        }
+
+        public enum ValueType
+        {
+            RequestIP,
+            IPResponse
+        }
+
+        public class SharingResult
+        {
+            public string Name { get; set; }
+            public ValueType Type { get; set; }
+            public string Value { get; set; }
+            public bool IsDiscoverable { get; set; } = false;
+        }
+
         IPlatformPath platformPath = DependencyService.Get<IPlatformPath>();
         private FileData fileToSend;
 
@@ -33,12 +55,13 @@ namespace FileSharing
         private IPAddress broadcast, network;
         private const int PORT = 1996;
 
-        private List<IPAddress> discoveredDevices = new List<IPAddress>();
+        public ObservableCollection<DeviceDetails> DiscoveredDevices = new ObservableCollection<DeviceDetails>();
 
         public MainPage()
         {
             InitializeComponent();
 
+            DevicesList.ItemsSource = DiscoveredDevices;
             InitializeIPAddress();
         }
 
@@ -63,7 +86,7 @@ namespace FileSharing
                     address = uni.Address;
                     subnetMask = uni.IPv4Mask;
                     broadcast = address.GetBroadcastAddress(subnetMask);
-                    IPAddressCurrent.Text += $"Name: {i.Name} IP: {address.ToString()} Subnet: {subnetMask.ToString()}\n";
+                    IPAddressCurrent.Text = $"Name: {DeviceInfo.Name}\nIP: {address.ToString()}";
                 }
             }
         }
@@ -75,61 +98,45 @@ namespace FileSharing
 
             SendLog.Text += "Now sending...\n";
 
-            /*
-            var Client = new UdpClient();
-            var RequestData = Encoding.ASCII.GetBytes("GIMMEHYOURADDRESS");
-
-            Client.EnableBroadcast = true;
-            Client.Send(RequestData, RequestData.Length, new IPEndPoint(IPAddress.Broadcast, 8888));
-
-            Client.BeginReceive(new AsyncCallback((IAsyncResult res) =>
-            {
-                SendLog.Text += "Received something...\n";
-                var client = (UdpClient)res.AsyncState;
-                var ServerEp = new IPEndPoint(IPAddress.Any, 0);
-                var ServerResponseData = client.EndReceive(res, ref ServerEp);
-                var ServerResponse = Encoding.ASCII.GetString(ServerResponseData);
-
-                IPAddress ip;
-                if (!IPAddress.TryParse(ServerResponse, out ip))
-                {
-                    SendLog.Text += $"Discovered {ServerEp.Address.ToString()} with message: {ServerResponse}\n";
-                    discoveredDevices.Add(ip);
-                }
-                else
-                {
-                    SendLog.Text += $"Could not parse the ip address sent back: {ServerResponse}\n";
-                }
-
-                client.Close();
-            }), Client);
-            /**/
-
             var port = 8888;
-            var address = broadcast.ToString();
-
             var receiver = new UdpSocketReceiver();
             receiver.MessageReceived += (sender, args) =>
             {
-                if (args.RemoteAddress.Equals(this.address.ToString()))
+                if (args.RemoteAddress.Equals(address.ToString()))
                     return;
 
-                var ServerResponse = Encoding.ASCII.GetString(args.ByteData, 0, args.ByteData.Length);
-
-                IPAddress ip;
-                if (IPAddress.TryParse(ServerResponse, out ip))
+                var ServerResponse = Encoding.UTF8.GetString(args.ByteData, 0, args.ByteData.Length);
+                SharingResult Result;
+                try
+                {
+                    Result = JsonConvert.DeserializeObject<SharingResult>(ServerResponse);
+                }
+                catch (Exception ex)
                 {
                     Device.BeginInvokeOnMainThread(() =>
                     {
-                        SendLog.Text += $"Discovered {args.RemoteAddress} with message: {ServerResponse}\n";
+                        SendLog.Text += "Error when deserializing the response.\n";
                     });
-                    discoveredDevices.Add(ip);
+                    return;
+                }
+
+                if (Result.Type != ValueType.IPResponse)
+                    return;
+
+                IPAddress ip;
+                if (IPAddress.TryParse(Result.Value, out ip))
+                {
+                    Device.BeginInvokeOnMainThread(() =>
+                    {
+                        SendLog.Text += $"Discovered device \"{Result.Name}\" ({ip.ToString()})\n";
+                    });
+                    DiscoveredDevices.Add(new DeviceDetails() { Name = Result.Name, Address = ip });
                 }
                 else
                 {
                     Device.BeginInvokeOnMainThread(() =>
                     {
-                        SendLog.Text += $"Could not parse the ip address sent back: {ServerResponse}\n";
+                        SendLog.Text += $"Could not parse the ip address sent back: {Result.Value}\n";
                     });
                 }
 
@@ -137,13 +144,13 @@ namespace FileSharing
             };
 
             // convert our greeting message into a byte array
-            var msg = "GIMMEHYOURADDRESS";
-            var msgBytes = Encoding.ASCII.GetBytes(msg);
+            var Response = JsonConvert.SerializeObject(new SharingResult() { Name = DeviceInfo.Name, Type = ValueType.RequestIP, Value = "GIMMEHYOURADDRESS", IsDiscoverable = isDiscoverable });
+            var msgBytes = Encoding.UTF8.GetBytes(Response);
 
             // send to address:port, 
             // no guarantee that anyone is there 
             // or that the message is delivered.
-            await receiver.SendToAsync(msgBytes, address, port);
+            await receiver.SendToAsync(msgBytes, broadcast.ToString(), port);
             await receiver.StartListeningAsync(port);
         }
 
@@ -153,28 +160,49 @@ namespace FileSharing
                 return;
             ReceiveLog.Text += "Now listening...\n";
 
-            /*
-            var Server = new UdpClient(8888);
-            Server.BeginReceive(new AsyncCallback(Receive), Server);
-            /**/
-
             var port = 8888;
-
             var receiver = new UdpSocketReceiver();
             receiver.MessageReceived += (sender, args) =>
             {
-                var ClientRequest = Encoding.ASCII.GetString(args.ByteData, 0, args.ByteData.Length);
-
                 if (!isDiscoverable || isReceiving)
+                {
                     Task.WaitAny(receiver.StopListeningAsync());
+                    return;
+                }
 
-                if (ClientRequest.Equals("GIMMEHYOURADDRESS"))
+                if (args.RemoteAddress.Equals(address.ToString()))
+                    return;
+
+                var ClientRequest = Encoding.UTF8.GetString(args.ByteData, 0, args.ByteData.Length);
+                SharingResult Result;
+                try
+                {
+                    Result = JsonConvert.DeserializeObject<SharingResult>(ClientRequest);
+                }
+                catch (Exception ex)
+                {
+                    Device.BeginInvokeOnMainThread(() =>
+                    {
+                        ReceiveLog.Text += "Error when deserializing the response.\n";
+                    });
+                    return;
+                }
+
+                if (Result.Type == ValueType.RequestIP && Result.Value.Equals("GIMMEHYOURADDRESS"))
                 {
                     Device.BeginInvokeOnMainThread(() =>
                     {
                         ReceiveLog.Text += $"Received broadcast from {args.RemoteAddress}\n";
                     });
-                    var ResponseData = Encoding.ASCII.GetBytes(address.ToString());
+
+                    var Response = JsonConvert.SerializeObject(new SharingResult() { Name = DeviceInfo.Name, Type = ValueType.IPResponse, Value = address.ToString(), IsDiscoverable = isDiscoverable });
+                    var ResponseData = Encoding.UTF8.GetBytes(Response);
+                    if (Result.IsDiscoverable)
+                    {
+                        IPAddress ip;
+                        if (IPAddress.TryParse(args.RemoteAddress, out ip))
+                            DiscoveredDevices.Add(new DeviceDetails() { Name = Result.Name, Address = ip });
+                    }
                     Task.WaitAny(receiver.SendToAsync(ResponseData, args.RemoteAddress, port));
                 }
             };
@@ -182,27 +210,12 @@ namespace FileSharing
             await receiver.StartListeningAsync(port);
         }
 
-        private void Receive(IAsyncResult res)
-        {
-            ReceiveLog.Text += "Received something...\n";
-            var Server = (UdpClient)res.AsyncState;
-            var ResponseData = Encoding.ASCII.GetBytes($"{address.ToString()}");
-            var ClientEp = new IPEndPoint(IPAddress.Any, 0);
-            var ClientRequestData = Server.EndReceive(res, ref ClientEp);
-
-            if (isDiscoverable && !isReceiving)
-                Server.BeginReceive(new AsyncCallback(Receive), Server);
-
-            var ClientRequest = Encoding.ASCII.GetString(ClientRequestData);
-
-            if (ClientRequest.Equals("GIMMEHYOURADDRESS"))
-            {
-                ReceiveLog.Text += $"Received broadcast from {ClientEp.Address.ToString()}\n";
-                Server.Send(ResponseData, ResponseData.Length, ClientEp);
-            }
-        }
-
         private async void HandleRefreshDevices(object sender, EventArgs e) => await SendBroadcast();
+
+        private void HandleSelectDevice(object sender, SelectedItemChangedEventArgs e)
+        {
+            IPAddressInput.Text = ((DeviceDetails)e.SelectedItem).Address.ToString();
+        }
 
         private async void HandleDiscoverableToggle(object sender, ToggledEventArgs e)
         {
@@ -356,12 +369,12 @@ namespace FileSharing
 
             ReceiveLog.Text += "Receiving file...\n";
             var path = Path.Combine(platformPath.DownloadPath(), fileName);
-            ReceiveLog.Text += $"Path to file is '{path}'";
+            ReceiveLog.Text += $"Path to file is '{path}'\n";
 
             var perm = await Permissions.RequestAsync<Permissions.StorageWrite>();
             if (perm != PermissionStatus.Granted)
             {
-                ReceiveLog.Text += "Permission to write not granted.";
+                ReceiveLog.Text += "Permission to write not granted.\n";
                 ResetReceive();
                 return;
             }
