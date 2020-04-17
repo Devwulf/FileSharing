@@ -1,7 +1,9 @@
-﻿using Newtonsoft.Json;
+﻿using FileSharing.Utils;
+using Newtonsoft.Json;
 using Plugin.FilePicker;
 using Plugin.FilePicker.Abstractions;
 using Sockets.Plugin;
+using Sockets.Plugin.Abstractions;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -12,6 +14,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Xamarin.Essentials;
 using Xamarin.Forms;
@@ -49,29 +52,37 @@ namespace FileSharing
 
         private TcpClient client;
         private TcpListener server;
-        private bool isDiscoverable = false, isSending = false, isReceiving = false;
+        private bool isSending = false, isReceiving = false;
+
+        private UdpSocketReceiver broadcaster = new UdpSocketReceiver();
+        private UdpSocketReceiver listener = new UdpSocketReceiver();
+        private bool isDiscoverable = false, isBroadcasting = false, isListening = false; 
+        private CancellationTokenSource sendCancelSource;
 
         private IPAddress address, subnetMask;
-        private IPAddress broadcast, network;
+        private IPAddress broadcast;
         private const int PORT = 1996;
+        private const int BROADCAST_PORT = 8888;
 
-        public ObservableCollection<DeviceDetails> DiscoveredDevices = new ObservableCollection<DeviceDetails>();
+        private ObservableCollection<DeviceDetails> discoveredDevices = new ObservableCollection<DeviceDetails>();
 
         public MainPage()
         {
             InitializeComponent();
+            Initialize();
 
-            DevicesList.ItemsSource = DiscoveredDevices;
+            DevicesList.ItemsSource = discoveredDevices;
+            broadcaster.MessageReceived += BroadcastReplied;
+            listener.MessageReceived += BroadcastReceived;
+        }
+
+        public void Initialize()
+        {
             InitializeIPAddress();
         }
 
         private void InitializeIPAddress()
         {
-            /*
-            var ipAddress = Dns.GetHostAddresses(Dns.GetHostName()).FirstOrDefault();
-            IPAddressCurrent.Text = $"Local IP Address: {ipAddress?.ToString()}\n";
-            */
-
             foreach (var i in NetworkInterface.GetAllNetworkInterfaces())
             {
                 if (!i.Name.Equals("wlan0"))
@@ -93,55 +104,17 @@ namespace FileSharing
 
         private async Task SendBroadcast()
         {
-            if (isSending)
+            if (isSending || isBroadcasting)
                 return; // don't want to keep sending broadcast when sending files
 
+            isBroadcasting = true;
+            RefreshDevices.IsEnabled = false;
+
+            sendCancelSource = new CancellationTokenSource();
+            discoveredDevices.Clear();
+
+            RefreshDevices.Text = "Stop Refresh";
             SendLog.Text += "Now sending...\n";
-
-            var port = 8888;
-            var receiver = new UdpSocketReceiver();
-            receiver.MessageReceived += (sender, args) =>
-            {
-                if (args.RemoteAddress.Equals(address.ToString()))
-                    return;
-
-                var ServerResponse = Encoding.UTF8.GetString(args.ByteData, 0, args.ByteData.Length);
-                SharingResult Result;
-                try
-                {
-                    Result = JsonConvert.DeserializeObject<SharingResult>(ServerResponse);
-                }
-                catch (Exception ex)
-                {
-                    Device.BeginInvokeOnMainThread(() =>
-                    {
-                        SendLog.Text += "Error when deserializing the response.\n";
-                    });
-                    return;
-                }
-
-                if (Result.Type != ValueType.IPResponse)
-                    return;
-
-                IPAddress ip;
-                if (IPAddress.TryParse(Result.Value, out ip))
-                {
-                    Device.BeginInvokeOnMainThread(() =>
-                    {
-                        SendLog.Text += $"Discovered device \"{Result.Name}\" ({ip.ToString()})\n";
-                    });
-                    DiscoveredDevices.Add(new DeviceDetails() { Name = Result.Name, Address = ip });
-                }
-                else
-                {
-                    Device.BeginInvokeOnMainThread(() =>
-                    {
-                        SendLog.Text += $"Could not parse the ip address sent back: {Result.Value}\n";
-                    });
-                }
-
-                Task.WaitAny(receiver.StopListeningAsync());
-            };
 
             // convert our greeting message into a byte array
             var Response = JsonConvert.SerializeObject(new SharingResult() { Name = DeviceInfo.Name, Type = ValueType.RequestIP, Value = "GIMMEHYOURADDRESS", IsDiscoverable = isDiscoverable });
@@ -150,67 +123,144 @@ namespace FileSharing
             // send to address:port, 
             // no guarantee that anyone is there 
             // or that the message is delivered.
-            await receiver.SendToAsync(msgBytes, broadcast.ToString(), port);
-            await receiver.StartListeningAsync(port);
+            await broadcaster.StartListeningAsync(BROADCAST_PORT);
+
+            RefreshDevices.IsEnabled = true;
+            await PeriodicTask.RunAsync(broadcaster.SendToAsync(msgBytes, broadcast.ToString(), BROADCAST_PORT), TimeSpan.FromSeconds(2), sendCancelSource.Token);
+        }
+
+        private async Task CancelBroadcast()
+        {
+            if (!isBroadcasting)
+                return;
+
+            RefreshDevices.IsEnabled = false;
+            RefreshDevices.Text = "Refresh Devices";
+            SendLog.Text += "Stopping broadcast...\n";
+
+            sendCancelSource.Cancel();
+            await broadcaster.StopListeningAsync();
+
+            isBroadcasting = false;
+            RefreshDevices.IsEnabled = true;
+        }
+
+        private void BroadcastReplied(object sender, UdpSocketMessageReceivedEventArgs args)
+        {
+            if (args.RemoteAddress.Equals(address.ToString()))
+                return;
+
+            var ServerResponse = Encoding.UTF8.GetString(args.ByteData, 0, args.ByteData.Length);
+            SharingResult Result;
+            try
+            {
+                Result = JsonConvert.DeserializeObject<SharingResult>(ServerResponse);
+            }
+            catch (Exception ex)
+            {
+                Device.BeginInvokeOnMainThread(() =>
+                {
+                    SendLog.Text += "Error when deserializing the response.\n";
+                });
+                return;
+            }
+
+            if (Result.Type != ValueType.IPResponse)
+                return;
+
+            IPAddress ip;
+            if (IPAddress.TryParse(Result.Value, out ip))
+            {
+                if (!discoveredDevices.Any(item => item.Address.ToString().Equals(Result.Value)))
+                {
+                    Device.BeginInvokeOnMainThread(() =>
+                    {
+                        SendLog.Text += $"Discovered device \"{Result.Name}\" ({ip.ToString()})\n";
+                    });
+                    discoveredDevices.Add(new DeviceDetails() { Name = Result.Name, Address = ip });
+                }
+            }
+            else
+            {
+                Device.BeginInvokeOnMainThread(() =>
+                {
+                    SendLog.Text += $"Could not parse the ip address sent back: {Result.Value}\n";
+                });
+            }
         }
 
         private async Task ListenForBroadcast()
         {
             if (isReceiving)
                 return;
+
             ReceiveLog.Text += "Now listening...\n";
-
-            var port = 8888;
-            var receiver = new UdpSocketReceiver();
-            receiver.MessageReceived += (sender, args) =>
-            {
-                if (!isDiscoverable || isReceiving)
-                {
-                    Task.WaitAny(receiver.StopListeningAsync());
-                    return;
-                }
-
-                if (args.RemoteAddress.Equals(address.ToString()))
-                    return;
-
-                var ClientRequest = Encoding.UTF8.GetString(args.ByteData, 0, args.ByteData.Length);
-                SharingResult Result;
-                try
-                {
-                    Result = JsonConvert.DeserializeObject<SharingResult>(ClientRequest);
-                }
-                catch (Exception ex)
-                {
-                    Device.BeginInvokeOnMainThread(() =>
-                    {
-                        ReceiveLog.Text += "Error when deserializing the response.\n";
-                    });
-                    return;
-                }
-
-                if (Result.Type == ValueType.RequestIP && Result.Value.Equals("GIMMEHYOURADDRESS"))
-                {
-                    Device.BeginInvokeOnMainThread(() =>
-                    {
-                        ReceiveLog.Text += $"Received broadcast from {args.RemoteAddress}\n";
-                    });
-
-                    var Response = JsonConvert.SerializeObject(new SharingResult() { Name = DeviceInfo.Name, Type = ValueType.IPResponse, Value = address.ToString(), IsDiscoverable = isDiscoverable });
-                    var ResponseData = Encoding.UTF8.GetBytes(Response);
-                    if (Result.IsDiscoverable)
-                    {
-                        IPAddress ip;
-                        if (IPAddress.TryParse(args.RemoteAddress, out ip))
-                            DiscoveredDevices.Add(new DeviceDetails() { Name = Result.Name, Address = ip });
-                    }
-                    Task.WaitAny(receiver.SendToAsync(ResponseData, args.RemoteAddress, port));
-                }
-            };
-
-            await receiver.StartListeningAsync(port);
+            Discoverable.IsEnabled = false;
+            await listener.StartListeningAsync(BROADCAST_PORT);
+            Discoverable.IsEnabled = true;
         }
 
-        private async void HandleRefreshDevices(object sender, EventArgs e) => await SendBroadcast();
+        private void BroadcastReceived(object sender, UdpSocketMessageReceivedEventArgs args)
+        {
+            if (isReceiving)
+            {
+                Task.WaitAny(listener.StopListeningAsync());
+                return;
+            }
+
+            if (args.RemoteAddress.Equals(address.ToString()))
+                return;
+
+            var ClientRequest = Encoding.UTF8.GetString(args.ByteData, 0, args.ByteData.Length);
+            SharingResult Result;
+            try
+            {
+                Result = JsonConvert.DeserializeObject<SharingResult>(ClientRequest);
+            }
+            catch (Exception ex)
+            {
+                Device.BeginInvokeOnMainThread(() =>
+                {
+                    ReceiveLog.Text += "Error when deserializing the response.\n";
+                });
+                return;
+            }
+
+            if (Result.Type == ValueType.RequestIP && Result.Value.Equals("GIMMEHYOURADDRESS"))
+            {
+                Device.BeginInvokeOnMainThread(() =>
+                {
+                    ReceiveLog.Text += $"Received broadcast from {args.RemoteAddress}\n";
+                });
+
+                var Response = JsonConvert.SerializeObject(new SharingResult() { Name = DeviceInfo.Name, Type = ValueType.IPResponse, Value = address.ToString(), IsDiscoverable = isDiscoverable });
+                var ResponseData = Encoding.UTF8.GetBytes(Response);
+                if (Result.IsDiscoverable)
+                {
+                    IPAddress ip;
+                    if (IPAddress.TryParse(args.RemoteAddress, out ip))
+                    {
+                        if (!discoveredDevices.Any(item => item.Address.ToString().Equals(ip.ToString())))
+                        {
+                            Device.BeginInvokeOnMainThread(() =>
+                            {
+                                ReceiveLog.Text += $"Discovered device \"{Result.Name}\" ({ip.ToString()})\n";
+                            });
+                            discoveredDevices.Add(new DeviceDetails() { Name = Result.Name, Address = ip });
+                        }
+                    }
+                }
+                Task.WaitAny(listener.SendToAsync(ResponseData, args.RemoteAddress, BROADCAST_PORT));
+            }
+        }
+
+        private async void HandleRefreshDevices(object sender, EventArgs e)
+        {
+            if (isBroadcasting)
+                await CancelBroadcast();
+            else
+                await SendBroadcast();
+        }
 
         private void HandleSelectDevice(object sender, SelectedItemChangedEventArgs e)
         {
@@ -225,7 +275,12 @@ namespace FileSharing
                 await ListenForBroadcast();
             }
             else
+            {
+                Discoverable.IsEnabled = false;
+                await listener.StopListeningAsync();
                 isDiscoverable = false;
+                Discoverable.IsEnabled = true;
+            }
         }
 
         private async void HandlePickFile(object sender, EventArgs e)

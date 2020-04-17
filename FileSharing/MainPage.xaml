@@ -14,8 +14,8 @@
             Size="44" />
         </ContentPage.IconImageSource>
         <StackLayout>
-            <Label Text="File Sharing v0.67" HorizontalOptions="CenterAndExpand" />
-            <Button Text="Refresh Devices" Clicked="HandleRefreshDevices" />
+            <Label Text="File Sharing v0.69" HorizontalOptions="CenterAndExpand" />
+            <Button x:Name="RefreshDevices" Text="Refresh Devices" Clicked="HandleRefreshDevices" />
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="150" />
